@@ -25,39 +25,39 @@ object Predict {
     */
   def main(args: Array[String]): Unit = {
 
-    val master = "local[3]"
-    val duration = 10
-    val kafkaServers ="localhost:9092"
-    val kafkaTopic = "url"
-    val kafkaGroupId = "scaGroup"
-    val kafkaReset = "latest" //"latest" "earliest"
-    val kafkaUrlIndex = 0
-    val gbdtModelPath = "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
-    val bayesModelPath = "D:\\sca\\PipLine_Model_bayes"
-    val dataOutPath = "hdfs://localhost:9000/sca/result"
+//    val master = "local[3]"
+//    val duration = 10
+//    val kafkaServers ="localhost:9092"
+//    val kafkaTopic = "url"
+//    val kafkaGroupId = "scaGroup"
+//    val kafkaReset = "latest" //"latest" "earliest"
+//    val kafkaUrlIndex = 0
+//    val gbdtModelPath = "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
+//    val bayesModelPath = "D:\\sca\\PipLine_Model_bayes"
+//    val dataOutPath = "hdfs://localhost:9000/sca/result"
 
-//    if (args.length < 9) {
-//      System.err.println("Usage: Predict <master> <kafkaServers> <kafkaTopic> <kafkaGroupId> <kafkaReset> " +
-//        "<kafkaUrlIndex> <gbdtModelPath> <bayesModelPath> <dataOutPath>")
-//      System.exit(1)
-//    }
-//    val master = args(0) // "local[*]"
-//    val duration = args(1).toInt //10
-//    val kafkaServers = args(2) //"localhost:9092"
-//    val kafkaTopic = args(3) // "url"
-//    val kafkaGroupId = args(4) //scaGroup
-//    val kafkaReset = args(5) //
-//    val kafkaUrlIndex = args(6).toInt // 76
-//    val gbdtModelPath = args(7) // "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
-//    val bayesModelPath = args(8) // "D:\\sca\\PipLine_Model_bayes"
-//    val dataOutPath = args(9) // "hdfs://localhost:9000/sca/result"
+    if (args.length < 9) {
+      System.err.println("Usage: Predict <master> <kafkaServers> <kafkaTopic> <kafkaGroupId> <kafkaReset> " +
+        "<kafkaUrlIndex> <gbdtModelPath> <bayesModelPath> <dataOutPath>")
+      System.exit(1)
+    }
+    val master = args(0) // "local[*]"
+    val duration = args(1).toInt //10
+    val kafkaServers = args(2) //"localhost:9092"
+    val kafkaTopic = args(3) // "url"
+    val kafkaGroupId = args(4) //scaGroup
+    val kafkaReset = args(5) //
+    val kafkaUrlIndex = args(6).toInt // 76
+    val gbdtModelPath = args(7) // "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
+    val bayesModelPath = args(8) // "D:\\sca\\PipLine_Model_bayes"
+    val dataOutPath = args(9) // "hdfs://localhost:9000/sca/result"
 
     //1. 初始化Spark
     val sparkConf = new SparkConf().setAppName("sca_predict").setMaster(master)
-      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-      .set("spark.streaming.backpressure.enabled","true")//启用反压
-      .set("spark.streaming.backpressure.pid.minRate","1")//最小摄入条数控制
-      .set("spark.streaming.kafka.maxRatePerPartition","10000")//最大摄入条数控制
+//      .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
+//      .set("spark.streaming.backpressure.enabled","true")//启用反压
+//      .set("spark.streaming.backpressure.pid.minRate","1")//最小摄入条数控制
+//      .set("spark.streaming.kafka.maxRatePerPartition","10000")//最大摄入条数控制
 
     val sc = new SparkContext(sparkConf)
     sc.setLogLevel("INFO")
@@ -177,15 +177,28 @@ object Predict {
   def saveAsFileAbsPath(dataFrame: DataFrame, absSaveDir: String, splitRex: String, saveMode: SaveMode): Unit = {
     val cal = Calendar.getInstance()
     cal.setTime(new Date())
-    val day: String = cal.get(Calendar.DAY_OF_MONTH).toString
-    val month: String = (cal.get(Calendar.MONTH) + 1).toString
+    val day: String = addZero(cal.get(Calendar.DAY_OF_MONTH).toString.toInt, 2)
+    val month: String = addZero((cal.get(Calendar.MONTH) + 1).toString.toInt, 2)
     val year: String = cal.get(Calendar.YEAR).toString
-    val outpath = s"$absSaveDir/$year-$month-$day"
+
+    val outpath = s"$absSaveDir/$year$month$day"
     dataFrame.sqlContext.sparkContext.hadoopConfiguration.set("mapred.output.compress", "false")
     //为了方便观看结果去掉压缩格式
     val allColumnName: String = dataFrame.columns.mkString(",")
     val result: DataFrame = dataFrame.selectExpr(s"concat_ws('$splitRex',$allColumnName) as allclumn")
     result.write.mode(saveMode).text(outpath)
+  }
+
+  // 考虑到日期中存在前导0，所以在此处加上补零的方法
+  def addZero(num: Int, len: Int):String = {
+    val s = new StringBuffer
+    s.append(num)
+    while ( {
+      s.length < len
+    }) { // 如果长度不足，则继续补0
+      s.insert(0, "0") // 在第一个位置处补0
+    }
+    s.toString
   }
 
 }
