@@ -24,39 +24,53 @@ object Predict {
    4. 存入hdfs数据: output count
     */
   def main(args: Array[String]): Unit = {
-    if (args.length < 9) {
-      System.err.println("Usage: Predict <master> <kafkaServers> <kafkaTopic> <kafkaGroupId> <kafkaReset> " +
-        "<kafkaUrlIndex> <gbdtModelPath> <bayesModelPath> <dataOutPath>")
-      System.exit(1)
-    }
-    val master = args(0) // "local[*]"
-    val duration = args(1).toInt //10
-    val kafkaServers = args(2) //"localhost:9092"
-    val kafkaTopic = args(3) // "url"
-    val kafkaGroupId = args(4) //scaGroup
-    val kafkaReset = args(5) //
-    val kafkaUrlIndex = args(6).toInt // 76
-    val gbdtModelPath = args(7) // "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
-    val bayesModelPath = args(8) // "D:\\sca\\PipLine_Model_bayes"
-    val dataOutPath = args(9) // "hdfs://localhost:9000/sca/result"
+
+    val master = "local[3]"
+    val duration = 10
+    val kafkaServers ="localhost:9092"
+    val kafkaTopic = "url"
+    val kafkaGroupId = "scaGroup"
+    val kafkaReset = "latest" //"latest" "earliest"
+    val kafkaUrlIndex = 0
+    val gbdtModelPath = "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
+    val bayesModelPath = "D:\\sca\\PipLine_Model_bayes"
+    val dataOutPath = "hdfs://localhost:9000/sca/result"
+
+//    if (args.length < 9) {
+//      System.err.println("Usage: Predict <master> <kafkaServers> <kafkaTopic> <kafkaGroupId> <kafkaReset> " +
+//        "<kafkaUrlIndex> <gbdtModelPath> <bayesModelPath> <dataOutPath>")
+//      System.exit(1)
+//    }
+//    val master = args(0) // "local[*]"
+//    val duration = args(1).toInt //10
+//    val kafkaServers = args(2) //"localhost:9092"
+//    val kafkaTopic = args(3) // "url"
+//    val kafkaGroupId = args(4) //scaGroup
+//    val kafkaReset = args(5) //
+//    val kafkaUrlIndex = args(6).toInt // 76
+//    val gbdtModelPath = args(7) // "D:\\sca\\PipLine_Model_Dir\\pipModelGbdt"
+//    val bayesModelPath = args(8) // "D:\\sca\\PipLine_Model_bayes"
+//    val dataOutPath = args(9) // "hdfs://localhost:9000/sca/result"
 
     //1. 初始化Spark
     val sparkConf = new SparkConf().setAppName("sca_predict").setMaster(master)
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
       .set("spark.streaming.backpressure.enabled","true")//启用反压
       .set("spark.streaming.backpressure.pid.minRate","1")//最小摄入条数控制
-      .set("spark.streaming.kafka.maxRatePerPartition","100")//最大摄入条数控制
+      .set("spark.streaming.kafka.maxRatePerPartition","10000")//最大摄入条数控制
 
     val sc = new SparkContext(sparkConf)
+    sc.setLogLevel("INFO")
     val ssc = new StreamingContext(sc, Seconds(duration)) //StreamingContext 是所有流功能的主要入口点。
     //屏蔽日志
-    Logger.getLogger("org.apache").setLevel(Level.ERROR)
-    Logger.getLogger("org.eclipse.jetty.server").setLevel(Level.ERROR)
+//    Logger.getLogger("org.apache").setLevel(Level.ERROR)
+//    Logger.getLogger("org.eclipse.jetty.server").setLevel(Level.ERROR)
 
     //1. 读取kafka数据
     var urls = readKafka(ssc, kafkaServers, kafkaTopic, kafkaGroupId, kafkaReset, kafkaUrlIndex)
-    println(s"1. 读取数据, input count: ${urls.count()}")
-//    urls.print(5)  //测试：OK
+    urls.count().print()
+    println(s"1 kafka input count:")
+    //    urls.print(5)  //测试：OK
 
     // 2. 处理数据 todo 过滤后缀、过滤白名单
     urls = urls.filter(
@@ -64,7 +78,7 @@ object Predict {
         || u.endsWith("cab") ||u.endsWith("ipa") ||u.endsWith("elf") ||u.endsWith("cod") ||u.endsWith("alx")
         ||u.endsWith("prc") || u.endsWith("zip") ||u.endsWith("rar")
     )
-    println(s"2. 过滤数据, filter count:  ${urls.count()}")
+//    println(s"2. suffix filter count: ${urls.count().print()}")
 //    urls.print(5)  //测试：OK
 
     val pipModelGbdt = PipelineModel.load(gbdtModelPath)
@@ -79,37 +93,37 @@ object Predict {
 
       //选出上面过滤后的dataframe中的url列，形成新的dataframe：fileFX
       val fileFX = df.select("url")
-      println(s"urls count: ${fileFX.count()}")
+//      println(s"urls count: ${fileFX.count()}")
 
       // 构建测试数据【通用】 构建特征：url,port端口,domainNameLevels域名级数长度,isIP是否含有IP,urllen URL长度,
       // longTermCount敏感词的数目,isDing是否顶级域名,is_Prefix_sensitive是否含有敏感词后缀,ishaschn是否含有中文,
       // execfile_len（val url_part=url.split("\\/") val execfile=url_part(url_part.length-1））,
       // Numricinlength 下载文件含有的数字长度,label
       val dataSeq = new UrlDataExtractForPredict(fileFX).init_feature()
-//      print(s"3.1 构建特征: ${dataSeq} \n")
+//      println(s"3.1 构建特征: ${dataSeq} \n")
       //构建测试数据集：转换列数据类型，转存至dataframe并返回
       val dataTest = new LoadUrlFeaturePredict(dataSeq, sc, spark).vLoad_data() // ref to proj1: classifynew/TrainV.scala
-//      println(s"3.2 构建测试数据集: ${dataTest.show(5)} \n")
+      println(s"3.2 构建测试数据集: ${dataTest.show(5)} \n")
 
       //进行预测【通用】 gbdt
       val save_info_hdfs_gbdt = pipModelGbdt.transform(dataTest)
         .selectExpr("  Url as url_GBDT ", "0.58 as prob_GBDT")
         .where("predictions=0")
       save_info_hdfs_gbdt.selectExpr("prob_GBDT")
-      println(s"3 gbdt output count: ${save_info_hdfs_gbdt.count()} \n")
+      println(s"3 gbdt output count: ${save_info_hdfs_gbdt.count()}")
 
 
       //构建测试数据【贝叶斯】构建特征，返回：Seq(url,和处理后的url（去除了协议，将[.=&?-@:(]均替换成了[/]）)
       val dataSeqBayes = new UrlDataExtractForBayesPredict(fileFX).__INIT_Feature__()
       //构建训练集：每一行是一个对象 UrlFeature_Bayes_predict（Url: String, Word:String）
       val dataBayesTest = new LoadUrlFeatureBayesPredict(dataSeqBayes, sc, spark).vLoad_data()
-//      print(s"4.1 构建特征: ${dataBayesTest} \n")
+//      println(s"4.1 构建特征: ${dataBayesTest} \n")
 
       //进行预测【贝叶斯】
       val save_info_bayes_hdfs = pipModelBayes.transform(dataBayesTest)
         .selectExpr("  Url as url_Bayes ", "myProbability as prob_Bayes")
         .where("predictions=0")
-      print(s"4 bayes output count: ${save_info_bayes_hdfs.count()} \n ${save_info_bayes_hdfs.show(5)}")
+      println(s"4 bayes output count: ${save_info_bayes_hdfs.count()}") // \n ${save_info_bayes_hdfs.show(5)}
 
       //模型融合，对各算法识别出的结果进行连接操作，将同时被检测出的疑似恶意URL作为检测结果
       var save_info_hdfs=save_info_hdfs_gbdt.join(save_info_bayes_hdfs, $"url_GBDT" === $"url_Bayes")
@@ -117,10 +131,10 @@ object Predict {
       val label_class = udf((x:Vector) => x(0))
       save_info_hdfs = save_info_hdfs.withColumn("prob_Bayes", label_class(col("prob_Bayes")))
 
-      println( s"5. save hdfs, output count: ${save_info_hdfs.count()} \n ${save_info_hdfs.show(5)}")
+      println( s"5 save hdfs count: ${save_info_hdfs.count()}")// \n ${save_info_hdfs.show(5)}
       //将结果写入hdfs
       if(save_info_hdfs.count()!=0){
-        save_info_hdfs.map(f=>f(0)+"|"+"0.8"  ).show()
+        save_info_hdfs.map(f=>f(0)+"|"+"0.8"  )//.show()
         saveAsFileAbsPath(save_info_hdfs, dataOutPath, "|", SaveMode.Append)
       }
     }
