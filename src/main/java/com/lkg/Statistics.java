@@ -39,7 +39,7 @@ public class Statistics {
         String outputPath = args[3];
         String whitePath = args[4];
         String blackPath = args[5];
-        boolean containMerge = Boolean.getBoolean(args[6]) ;
+        boolean excludeMerge = Boolean.getBoolean(args[6]) ;
         if(!hdfsPath.endsWith("/")){
             hdfsPath +="/";
         }
@@ -61,7 +61,7 @@ public class Statistics {
         String mergePath = inputPath + "/merge-" + dateStr + ".txt";
 
         // 合并小文件
-        mergeFiles(hdfsPath, inputPath, mergePath, containMerge);
+        mergeFiles(hdfsPath, inputPath, mergePath, excludeMerge);
         // 去重
         SparkConf conf = new SparkConf().setAppName("sca_statistics").setMaster(master);
         JavaSparkContext sc = new JavaSparkContext(conf);
@@ -85,7 +85,7 @@ public class Statistics {
         logger.info("spend time: " + (System.currentTimeMillis()-start)/1000 + "s");
     }
 
-    private static void mergeFiles(String hdfsPath, String inputPath, String outputPath, boolean containMerge) throws URISyntaxException, IOException {
+    private static void mergeFiles(String hdfsPath, String inputPath, String outputPath, boolean excludeMerge) throws URISyntaxException, IOException {
         Configuration conf = new Configuration();
         FileSystem hdfs = FileSystem.get(new URI(hdfsPath), conf);
         FSDataOutputStream outputStream = hdfs.create(new Path(outputPath));
@@ -93,7 +93,7 @@ public class Statistics {
         for (FileStatus fileStatus : fileStatuses) {
             if (!fileStatus.isDirectory()) { //过滤掉文件夹，只操作文件。
                 Path tmpPath = fileStatus.getPath();
-                if(tmpPath.getName().contains("merge") || containMerge){
+                if(tmpPath.getName().contains("merge") && excludeMerge){
                     continue;
                 }
                 FSDataInputStream inputStream = hdfs.open(tmpPath);
