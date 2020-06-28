@@ -29,8 +29,9 @@ public class Statistics {
 
     public static void main(String[] args) throws IOException, URISyntaxException {
         long start = System.currentTimeMillis();
-        if (args.length < 4) {
-            System.err.println("Usage: Statistics <master> <hdfsPath> <inputPath> <outputPath> <whitePath> <blackPath>");
+        if (args.length < 6) {
+            System.err.println("Usage: Statistics <master> <hdfsPath> <inputPath> <outputPath> " +
+                    "<whitePath> <blackPath> <localPath>");
             System.exit(1);
         }
         String master = args[0];
@@ -39,85 +40,132 @@ public class Statistics {
         String outputPath = args[3];
         String whitePath = args[4];
         String blackPath = args[5];
-        boolean excludeMerge = Boolean.getBoolean(args[6]) ;
-        if(!hdfsPath.endsWith("/")){
-            hdfsPath +="/";
-        }
+        String localDst = args[6];
+
 //        String master = "local[*]";
 //        String hdfsPath = "hdfs://localhost:9000";
 //        String inputPath = "/sca/result/2020-6-23";
 //        String outputPath = "/sca/statistics";
 //        String whitePath = "/sca/white/white.txt";
 //        String blackPath = "/sca/black/black.txt";
+//        boolean excludeMerge = Boolean.getBoolean("false") ;
 
+        if(!hdfsPath.endsWith("/")){
+            hdfsPath +="/";
+        }
         DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
         LocalDateTime ldt = LocalDateTime.now();
         String dateStr = ldt.format(dtf);
+        String mergePath = inputPath + "/merge-" + dateStr + ".txt";
         if (outputPath.endsWith("/")){
             outputPath = outputPath + dateStr + "_SCA_10.0.16.26_maliceurl";
         }else {
             outputPath = outputPath + "/" + dateStr + "_SCA_10.0.16.26_maliceurl";
         }
-        String mergePath = inputPath + "/merge-" + dateStr + ".txt";
 
         // 合并小文件
-        mergeFiles(hdfsPath, inputPath, mergePath, excludeMerge);
+        mergeFiles(hdfsPath, inputPath, mergePath);
         // 去重
         SparkConf conf = new SparkConf().setAppName("sca_statistics").setMaster(master);
         JavaSparkContext sc = new JavaSparkContext(conf);
         SparkSession spark = SparkSession.builder().config(conf).getOrCreate();
         JavaRDD<String> text = spark.read().textFile(hdfsPath + mergePath).javaRDD();// "hdfs://localhost:9000/aaa"
+        long inputCount = text.count();
         JavaPairRDD<String, String> rowRDD = text.mapToPair(s -> new Tuple2<>(s.split("\\|")[0], s));
-        JavaRDD<String> resultRDD = rowRDD.reduceByKey((x, y)->x).map(Tuple2::_2);
-        // 过滤
+        JavaRDD<String> resultRDD = rowRDD.reduceByKey((x, y)->x).map(Tuple2::_1);
+        long deleteRepetitionCount = resultRDD.count();
+        logger.info("=====>inputCount: " + inputCount + "\nfilter: " + (inputCount - deleteRepetitionCount)
+                + "\ndelete repetition: " + deleteRepetitionCount);
+        // 黑白名单过滤
         JavaRDD<String> black = spark.read().textFile(hdfsPath + whitePath).javaRDD();
         JavaRDD<String> white = spark.read().textFile(hdfsPath + blackPath).javaRDD();
         JavaRDD<String> filterListRDD = black.union(white);
         Broadcast<List<String>> filterListBroadcast = sc.broadcast(filterListRDD.collect());
-        int resultSize = resultRDD.collect().size();
+//        int resultSize = resultRDD.collect().size();
         resultRDD = resultRDD.filter(s -> !filterListBroadcast.value().contains(s));
+        resultRDD = resultRDD.filter(s -> s.endsWith(".apk"));
         List<String> result = resultRDD.collect();
-        System.out.println("===>result: " + result.size() + "; filter: " + (resultSize - result.size()));
+        int resultSize = result.size();
+        logger.info("=====>result: " + resultSize + "; blacklist and whitelist filter: " + (deleteRepetitionCount - resultSize));
         // 转化为json，并写入hdfs
         JSON resultJSON = toJSON(result, 10000);
         writeToHDFS(hdfsPath, outputPath, resultJSON.toString());
         spark.stop();
-        logger.info("spend time: " + (System.currentTimeMillis()-start)/1000 + "s");
+        hdfsDownloadLocal(outputPath, localDst);
+        logger.info("=====>inputCount: " + inputCount + "\ndelete repetition filter: " + (inputCount - deleteRepetitionCount)
+                + "\nafter delete repetition: " + deleteRepetitionCount
+                + "\nblacklist and whitelist filter: " + (deleteRepetitionCount - resultSize)
+                + "\nresult: " + resultSize
+        );
+        logger.info("=====>spend time: " + (System.currentTimeMillis()-start)/1000 + "s");
     }
 
-    private static void mergeFiles(String hdfsPath, String inputPath, String outputPath, boolean excludeMerge) throws URISyntaxException, IOException {
+    private static void mergeFiles(String hdfsPath, String inputPath, String mergePathName) {
         Configuration conf = new Configuration();
-        FileSystem hdfs = FileSystem.get(new URI(hdfsPath), conf);
-        FSDataOutputStream outputStream = hdfs.create(new Path(outputPath));
-        FileStatus[] fileStatuses = hdfs.listStatus(new Path(inputPath));
-        for (FileStatus fileStatus : fileStatuses) {
-            if (!fileStatus.isDirectory()) { //过滤掉文件夹，只操作文件。
+        conf.set("dfs.datanode.max.xcievers", "4096");
+        Path mergePath = new Path(mergePathName);
+        try(
+            FileSystem hdfs = FileSystem.get(new URI(hdfsPath), conf);
+            FSDataOutputStream mergeOutputStream = hdfs.create(mergePath)
+        ) {
+            FileStatus[] fileStatuses = hdfs.listStatus(new Path(inputPath));
+            int total = fileStatuses.length;
+            int i = 1;
+            for (FileStatus fileStatus : fileStatuses) {
                 Path tmpPath = fileStatus.getPath();
-                if(tmpPath.getName().contains("merge") && excludeMerge){
+                logger.info(i++ + "/" + total + ": " + tmpPath.getName());
+                if(tmpPath.getName().startsWith("_") || mergePath.getName().equals(tmpPath.getName())){
                     continue;
                 }
-                FSDataInputStream inputStream = hdfs.open(tmpPath);
-                IOUtils.copyBytes(inputStream, outputStream, 4096, false);
-                IOUtils.closeStream(inputStream);//关闭临时的输入流
-                hdfs.delete(tmpPath, true); //正式环境取消注释
+                if (!fileStatus.isDirectory()) { //过滤掉文件夹，只操作文件。
+                    FSDataInputStream inputStream = hdfs.open(tmpPath);
+                    IOUtils.copyBytes(inputStream, mergeOutputStream, 4096, false);
+                    IOUtils.closeStream(inputStream);//关闭临时的输入流
+                    mergeOutputStream.flush();
+                    hdfs.delete(tmpPath, true); //正式环境取消注释
+                }else{
+                    FileStatus[] files2 = hdfs.listStatus(fileStatus.getPath());
+                    for (FileStatus f: files2){
+                        if(f.getPath().getName().startsWith("_") || mergePath.getName().equals(f.getPath().getName())){
+                            continue;
+                        }
+                        FSDataInputStream inputStream = hdfs.open(f.getPath());
+                        IOUtils.copyBytes(inputStream, mergeOutputStream, 4096, false);
+                        IOUtils.closeStream(inputStream);//关闭临时的输入流
+                        mergeOutputStream.flush();
+//                        hdfs.delete(f.getPath(), true); //正式环境取消注释
+                    }
+                    hdfs.delete(fileStatus.getPath(), true);
+                }
             }
+        } catch (IOException | URISyntaxException e) {
+            e.printStackTrace();
         }
-        outputStream.close();
-        hdfs.close();
     }
 
     private static void writeToHDFS(String hdfsPath, String outputPath, String content) throws URISyntaxException, IOException {
         Configuration conf = new Configuration();
         FileSystem hdfs = FileSystem.get(new URI(hdfsPath), conf);
         Path dst = new Path(outputPath);
-        if(hdfs.exists(dst)){
-            hdfs.delete(dst, true);
-        }
+//        if(hdfs.exists(dst)){
+//            hdfs.delete(dst, true);
+//        }
         FSDataOutputStream outputStream = hdfs.create(dst);
         outputStream.writeBytes(content);
         outputStream.flush();
         outputStream.close();
         hdfs.close();
+    }
+
+    private static void hdfsDownloadLocal(String src, String dst){
+        Configuration conf = new Configuration();
+        try (FileSystem fs = FileSystem.get(URI.create(src), conf)) {
+            Path srcPath = new Path(src);
+            Path dstPath = new Path(dst+"/" + srcPath.getName());
+            fs.copyToLocalFile(srcPath, dstPath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     private static JSON toJSON(List<String> result, int limit){
