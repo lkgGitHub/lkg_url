@@ -92,12 +92,13 @@ public class Statistics {
         writeToHDFS(hdfsPath, outputPath, resultJSON.toString());
         spark.stop();
         hdfsDownloadLocal(outputPath, localDst);
-        logger.info("=====>inputCount: " + inputCount + "\ndelete repetition filter: " + (inputCount - deleteRepetitionCount)
+        logger.info("=====>spend time: " + (System.currentTimeMillis()-start)/1000 + "s"
+                + "\ninputCount: " + inputCount
+                + "\ndelete repetition filter: " + (inputCount - deleteRepetitionCount)
                 + "\nafter delete repetition: " + deleteRepetitionCount
                 + "\nblacklist and whitelist filter: " + (deleteRepetitionCount - resultSize)
                 + "\nresult: " + resultSize
         );
-        logger.info("=====>spend time: " + (System.currentTimeMillis()-start)/1000 + "s");
     }
 
     private static void mergeFiles(String hdfsPath, String inputPath, String mergePathName) {
