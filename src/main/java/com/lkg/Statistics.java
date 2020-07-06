@@ -12,6 +12,7 @@ import org.apache.spark.broadcast.Broadcast;
 import org.apache.spark.sql.SparkSession;
 import scala.Tuple2;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -41,7 +42,7 @@ public class Statistics {
         String whitePath = args[4];
         String blackPath = args[5];
         String localDst = args[6];
-
+        int limitResult = Integer.parseInt(args[7]);
 //        String master = "local[*]";
 //        String hdfsPath = "hdfs://localhost:9000";
 //        String inputPath = "/sca/result/2020-6-23";
@@ -58,9 +59,9 @@ public class Statistics {
         String dateStr = ldt.format(dtf);
         String mergePath = inputPath + "/merge-" + dateStr + ".txt";
         if (outputPath.endsWith("/")){
-            outputPath = outputPath + dateStr + "_SCA_10.0.16.26_maliceurl";
+            outputPath = outputPath + dateStr.substring(0, 8) + "_SCA_10.0.16.26_maliceurl";
         }else {
-            outputPath = outputPath + "/" + dateStr + "_SCA_10.0.16.26_maliceurl";
+            outputPath = outputPath + "/" + dateStr.substring(0, 8) + "_SCA_10.0.16.26_maliceurl";
         }
 
         // 合并小文件
@@ -87,15 +88,15 @@ public class Statistics {
         List<String> result = resultRDD.collect();
         int resultSize = result.size();
         logger.info("=====>result: " + resultSize + "; blacklist and whitelist filter: " + (deleteRepetitionCount - resultSize));
-        // 转化为json，并写入hdfs
-        JSON resultJSON = toJSON(result, 10000);
-        writeToHDFS(hdfsPath, outputPath, resultJSON.toString());
         spark.stop();
+        // 转化为json，并写入hdfs
+        JSON resultJSON = toJSON(result, limitResult);
+        writeToHDFS(hdfsPath, outputPath, resultJSON.toString());
         hdfsDownloadLocal(outputPath, localDst);
         logger.info("=====>spend time: " + (System.currentTimeMillis()-start)/1000 + "s"
-                + "\ninputCount: " + inputCount
-                + "\ndelete repetition filter: " + (inputCount - deleteRepetitionCount)
-                + "\nafter delete repetition: " + deleteRepetitionCount
+                + "\ninputCount:                     " + inputCount
+                + "\ndelete repetition filter:       " + (inputCount - deleteRepetitionCount)
+                + "\nafter delete repetition:        " + deleteRepetitionCount
                 + "\nblacklist and whitelist filter: " + (deleteRepetitionCount - resultSize)
                 + "\nresult: " + resultSize
         );
@@ -148,11 +149,11 @@ public class Statistics {
         Configuration conf = new Configuration();
         FileSystem hdfs = FileSystem.get(new URI(hdfsPath), conf);
         Path dst = new Path(outputPath);
-//        if(hdfs.exists(dst)){
-//            hdfs.delete(dst, true);
-//        }
+        if(hdfs.exists(dst)){
+            hdfs.delete(dst, true);
+        }
         FSDataOutputStream outputStream = hdfs.create(dst);
-        outputStream.writeBytes(content);
+        outputStream.write(content.getBytes());
         outputStream.flush();
         outputStream.close();
         hdfs.close();
@@ -162,6 +163,10 @@ public class Statistics {
         Configuration conf = new Configuration();
         try (FileSystem fs = FileSystem.get(URI.create(src), conf)) {
             Path srcPath = new Path(src);
+            File file = new File(dst+"/" + srcPath.getName());
+            if (file.exists()) {
+                file.delete();
+            }
             Path dstPath = new Path(dst+"/" + srcPath.getName());
             fs.copyToLocalFile(srcPath, dstPath);
         } catch (IOException e) {
@@ -191,7 +196,7 @@ public class Statistics {
             map.put("domain", domain);
             map.put("url", u);
             list.add(map);
-            limit -= 1;
+            limit = limit - 1;
             if (limit<=0){
                 break;
             }

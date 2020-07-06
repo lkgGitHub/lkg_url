@@ -2,13 +2,14 @@ package com.lkg
 
 import java.util.{Calendar, Date}
 
+import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.ml.PipelineModel
 import org.apache.spark.ml.linalg.Vector
 import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.{DataFrame, SaveMode, SparkSession}
-import org.apache.spark.streaming.dstream.DStream
+import org.apache.spark.streaming.dstream.{DStream, InputDStream}
 import org.apache.spark.streaming.kafka010.ConsumerStrategies.Subscribe
 import org.apache.spark.streaming.kafka010.KafkaUtils
 import org.apache.spark.streaming.kafka010.LocationStrategies.PreferConsistent
@@ -58,16 +59,18 @@ object Predict {
 //      .set("spark.streaming.backpressure.enabled","true")//启用反压
 //      .set("spark.streaming.backpressure.pid.minRate","1")//最小摄入条数控制
 //      .set("spark.streaming.kafka.maxRatePerPartition","10000")//最大摄入条数控制
-
+//屏蔽日志
+//    Logger.getLogger("org.apache").setLevel(Level.ERROR)
+//    Logger.getLogger("org.eclipse.jetty.server").setLevel(Level.ERROR)
     val sc = new SparkContext(sparkConf)
     sc.setLogLevel("INFO")
     val ssc = new StreamingContext(sc, Seconds(duration)) //StreamingContext 是所有流功能的主要入口点。
-    //屏蔽日志
-//    Logger.getLogger("org.apache").setLevel(Level.ERROR)
-//    Logger.getLogger("org.eclipse.jetty.server").setLevel(Level.ERROR)
 
     //1. 读取kafka数据
-    var urls = readKafka(ssc, kafkaServers, kafkaTopic, kafkaGroupId, kafkaReset, kafkaUrlIndex)
+    val stream = readKafka(ssc, kafkaServers, kafkaTopic, kafkaGroupId, kafkaReset, false)
+    //    stream.map(record=>record.value)
+    var urls = stream.map(record=>record.value.split("\\|")(kafkaUrlIndex))
+
     urls.count().print()
     println(s"1 kafka input count:")
     //    urls.print(5)  //测试：OK
@@ -144,27 +147,23 @@ object Predict {
   }
 
   // 读取kafka数据
-  def readKafka(ssc: StreamingContext, kafkaServers: String, topic: String,kafkaGroupId: String, reset: String,
-                urlIndex: Int ): DStream[String] ={
-
+  def readKafka(ssc: StreamingContext, kafkaServers: String, topic: String, kafkaGroupId: String, reset: String,
+                autoCommit: Boolean ): InputDStream[ConsumerRecord[String, String]] = {
     val kafkaParams = Map[String, Object](
       "bootstrap.servers" -> kafkaServers,
       "key.deserializer" -> classOf[StringDeserializer],
       "value.deserializer" -> classOf[StringDeserializer],
       "group.id" -> kafkaGroupId,
       "auto.offset.reset" -> reset, // "latest".earliest:无提交的offset时，从头开始消费; latest: 无提交的offset时，消费新产生的该分区下的数据
-      "enable.auto.commit" -> (false: java.lang.Boolean)
+      "enable.auto.commit" -> (autoCommit: java.lang.Boolean) //(false: java.lang.Boolean)
     )
     val topics = Array(topic) //我们需要消费的kafka数据的topic列表
-    //kafka消费者进行消费
-    val stream = KafkaUtils.createDirectStream[String, String](
+    val stream = KafkaUtils.createDirectStream[String, String]( //kafka消费者进行消费
       ssc,
       PreferConsistent,
       Subscribe[String, String](topics, kafkaParams)
     )
-//    stream.print(1)
-    //    stream.map(record=>record.value)
-    stream.map(record=>record.value.split("\\|")(urlIndex))
+    stream
   }
 
   /*** 将 DataFrame 保存为 hdfs 文件 同时指定保存绝对路径 与 分隔符
@@ -181,12 +180,11 @@ object Predict {
     val month: String = addZero((cal.get(Calendar.MONTH) + 1).toString.toInt, 2)
     val year: String = cal.get(Calendar.YEAR).toString
 
-    val outpath = s"$absSaveDir/$year$month$day"
-    dataFrame.sqlContext.sparkContext.hadoopConfiguration.set("mapred.output.compress", "false")
-    //为了方便观看结果去掉压缩格式
+    val outPath = s"$absSaveDir/$year$month$day"
+    dataFrame.sqlContext.sparkContext.hadoopConfiguration.set("mapred.output.compress", "false") //为了方便观看结果去掉压缩格式
     val allColumnName: String = dataFrame.columns.mkString(",")
     val result: DataFrame = dataFrame.selectExpr(s"concat_ws('$splitRex',$allColumnName) as allclumn")
-    result.write.mode(saveMode).text(outpath)
+    result.write.mode(saveMode).text(outPath)
   }
 
   // 考虑到日期中存在前导0，所以在此处加上补零的方法
