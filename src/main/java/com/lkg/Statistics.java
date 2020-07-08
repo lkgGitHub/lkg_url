@@ -176,7 +176,7 @@ public class Statistics {
 
     private static JSON toJSON(List<String> result, int limit){
         Random rand = new Random();
-        int size = result.size();
+        int size = Math.min(result.size(), limit);
         DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         LocalDateTime ldt = LocalDateTime.now();
         String date = ldt.format(dtf);
